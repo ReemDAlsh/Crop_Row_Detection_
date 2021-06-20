@@ -1,129 +1,443 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+import os
+import os.path
+import sys
+import cv2
+import time
+import glob
+from adafruit_servokit import ServoKit
+import numpy as np
+data_form = 2 # set data_form into 0 for images, 1 for video data, 2 for camera.
+image_out_path = os.path.abspath('../img_result/with_KF')
+videoToimg_out_dir = os.path.abspath('../CRBD/videoToimage')
+curr_image = 0 # global counter
+color = (0, 0, 255) # red
+save_flag = 0 # if save_flag is 0 it saves the result(crop row), if save_flag is 1, it saves all steps except the results(image process, line detect)
 
-# C extensions
-*.so
+def main():
+    diff_times = []
+    left_row = []
+    right_row = []
+    #kit=ServoKit(channels=16)
+    #tilt=90
+    #pan=0
+    #kit.servo[0].angle=pan
+    #for i in range(180,0):
+    #kit.servo[0].angle=i
+    #time.sleep(.05)
+    #for i in range(180,0,-1):
+    #kit.servo[0].angle=i
+    #time.sleep(.05)
+    global curr_image
+    if data_form == 0:
+        imgs = sorted(glob.glob("../CRBD/images_my/*.JPG"))
+        for fname in imgs:
+            cv2.namedWindow('row Markers',cv2.WINDOW_NORMAL)
+            curr_image += 1
+            start_time = time.time()
+            # Load image and prepare output image
+            img = cv2.imread(fname)
+            #defining region of interest
+            crop_row_detection(img, fname)
+            diff_times.append(time.time() - start_time)
+            mean = 0
+            for diff_time in diff_times:
+                mean += diff_time
+            print('max time = {0}'.format(max(diff_times)))
+            print('ave time = {0}'.format(1.0 * mean / len(diff_times)))
+    elif data_form == 1:#use video data.
+        # extract frames from a video and save to directory as 'x.JPG' where
+        # x is the frame index
+        vidcap = cv2.VideoCapture('crop_video.mp4')
+        cv2.namedWindow('row Markers',cv2.WINDOW_NORMAL)
+        while vidcap.isOpened():
+            success, image = vidcap.read()
+            if success:
+                curr_image += 1
+                start_time = time.time()
+                crop_row_detection(image, 'ccc')
+                #save to directory as 'x.JPG'
+                image_name_new = os.path.join(videoToimg_out_dir, "{0}_{1}.jpg".format('videoTOimg', str(curr_image) ))
+                cv2.imwrite(image_name_new, image)
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+                diff_times.append(time.time() - start_time)
+                mean = 0
+                for diff_time in diff_times:
+                    mean += diff_time
+                print('max time = {0}'.format(max(diff_times)))
+                print('ave time = {0}'.format(1.0 * mean / len(diff_times)))
+            else:
+                break
+        cv2.destroyAllWindows()
+        vidcap.release()
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+    elif data_form == 2:
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+        cap = cv2.VideoCapture(0)
+        while cv2.waitKey(1) < 0:
+            curr_image += 1
+            start_time = time.time()
+            ret, frame = cap.read()
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
+            # if frame is read correctly ret is True
+            if not ret:
+                print("Can't receive frame (stream end?). Exiting ...")
+                break
+                # Our operations on the frame come here
+            crop_lines = crop_row_detection(frame, 'ccc')
+            #kit=ServoKit(channels=16)
+            #tilt=90
+            #pan=0
+            #kit.servo[0].angle=pan
+            #for i in range(180,0):
+            #kit.servo[0].angle=i
+            #time.sleep(.5)
+            #for i in range(180,0,-1):
+            #kit.servo[0].angle=i
+            #time.sleep(.5)
 
-# Translations
-*.mo
-*.pot
+            # cv2.imshow("Webcam", cv2.addWeighted(frame, 1, crop_lines, 1, 0.0))
+            if cv2.waitKey(1) == ord('q'):
+                break
+            diff_times.append(time.time() - start_time)
+            mean = 0
+            for diff_time in diff_times:
+                mean += diff_time
+            print('max time = {0}'.format(max(diff_times)))
+            print('ave time = {0}'.format(1.0 * mean / len(diff_times)))
+def crop_row_detection(img, fname):
+    global left_Q_est # state of the system for the preceding time sample at crop left row
+    global left_P_est#state covariance matrix at the preceding time sample at crop left row
+    global right_Q_est# state of the system for the preceding time sample at crop right row
+    global right_P_est#state covariance matrix at the preceding time sample at crop right row
+    global left_Q # state of the system for the current time sample at crop left row
+    global left_P #state covariance matrix at the current time sample at crop left row
+    global right_Q # state of the system for the current time sample at crop right row
+    global right_P #state covariance matrix at the current time sample at crop right row
+    global left_row # for crop left row detection
+    global right_row # for crop right row detection
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+    #------initialize------------
+    if curr_image == 1:
+        left_Q_est = np.array([])
+        left_P_est = np.array([])
+        right_Q_est = np.array([])
+        right_P_est = np.array([])
+        left_row = []
+        right_row = []
 
-# Flask stuff:
-instance/
-.webassets-cache
+    prediction_error_tolerance = 100 #pixels
 
-# Scrapy stuff:
-.scrapy
+    top_margin = int(img.shape[0]*200/700)#pixels
+    bottom_margin = int(img.shape[0]*500/700)#pixels
+    left_row_left_margin = int(img.shape[1]*50/1024)#pixels
+    left_row_right_margin = int(img.shape[1]*525/1024)#pixels
+    right_row_left_margin = int(img.shape[1]*525/1024)#pixels
+    right_row_right_margin = int(img.shape[1]*1000/1024)#pixels
+    height = int(img.shape[0])
+    #load test image
+    left_row_img = img[top_margin:bottom_margin,left_row_left_margin:left_row_right_margin]
+    right_row_img = img[top_margin:bottom_margin,right_row_left_margin:right_row_right_margin]
 
-# Sphinx documentation
-docs/_build/
+    #Kalman filter constants
+    dt = 1
+    u = np.array([[0.01],[0.01]])
+    acc_noise = 0.1
+    c_meas_noise = 0.1
+    theta_meas_noise = 0.1
+    Ez = np.array([[c_meas_noise,0],[0,theta_meas_noise]] )#measurement prediction error
+    Ex = np.array( [[(dt**4)/4,0,(dt**3)/2,0],[0,(dt**4)/4,0,(dt**3)/2],[(dt**3)/2,0,(dt**2),0],[0,(dt**3)/2,0,(dt**2)]])* (acc_noise**2)#State prediction error
 
-# PyBuilder
-target/
+    #state and measurement equations
+    A = np.array([[1,0,dt,0],[0,1,0,dt],[0,0,1,0],[0,0,0,1]] )
+    B = np.array([[(dt**2)/2,0],[0,(dt**2)/2],[dt,0],[0,dt]] )
+    C = np.array([[1,0,0,0],[0,1,0,0]] )
+    #Kalman Filter
+    if left_row:
+        (left_Q_est,left_P_est) = Kalman_filter_estimate(A,B,u,Ex,left_Q,left_P)
+    if right_row:
+        (right_Q_est,right_P_est) = Kalman_filter_estimate(A,B,u,Ex,right_Q,right_P)
+    trial = 1
+    left_row = []
+    right_row = []
+    while((not left_row) or (not right_row)):
+        #image processing
+        start_time = time.time()
+        left_img_pr = process_img(left_row_img, 'left_row')
+        right_img_pr = process_img(right_row_img, 'right_row')
+        #Elimination of Background based on Kalman Filtering
+        if left_Q_est.size and trial ==1:
+            left_img_pr = elimnate_predicted_background("left", left_img_pr, left_row_img.shape[1],left_row_img.shape[0], top_margin, left_row_left_margin,  height, left_Q_est, prediction_error_tolerance )
+        if right_Q_est.size and trial ==1:
+            right_img_pr = elimnate_predicted_background("right", right_img_pr, right_row_img.shape[1], right_row_img.shape[0], top_margin, right_row_left_margin,  height, right_Q_est, prediction_error_tolerance )
+            #determination of best estimates of left and right line through a combination of best detectable lines and a weighted score on their anglesand intercepts with the bottomof the picture
+        if(not left_row):
+            left_lines = detect_best_lines(left_img_pr,85,30,70,100)
+            left_row = decide_rows("left",left_lines,img.shape[0],top_margin, left_row_left_margin, left_row_right_margin )
+        if(not right_row):
+            right_lines = detect_best_lines(right_img_pr,85,30,70,100)
+            right_row = decide_rows("right",right_lines,img.shape[0], top_margin, right_row_left_margin, right_row_right_margin )
+        if save_flag == 1:
+            save_image('divided_left_img', left_row_img)
+            save_image('divided_right_img', right_row_img)
+            save_image('eli_left_img', left_img_pr)
+            save_image('eli_right_img', right_img_pr)
+            draw_lines(left_row_img, left_lines, color)
+            draw_lines(right_row_img, right_lines, color)
+            save_image('lines_detect', img)
+            #measured intercept and angle values are used to update Kalman filter
+        if left_row:
+            (left_Q,left_P) = Kalman_Filter_Update(C,Ex,Ez,left_Q_est, left_P_est, np.array([[left_row[-1]],[left_row[4]]]) )
+        if right_row:
+            (right_Q,right_P) = Kalman_Filter_Update(C,Ex,Ez,right_Q_est, right_P_est, np.array([[right_row[-1]],[right_row[4]]]) )
+        if(trial >=2):
+            if not left_row:
+                x1 = left_Q_est[0][0]
+                y1 = height
+                x2 = 0
+                y2 = height+(left_Q_est[0][0]/np.tan(left_Q_est[1][0]) )
+                theta = left_Q_est[1][0]
+                intercept = left_Q_est[0][0]
+                left_row = [x1,y1,x2,y2,theta,intercept]
+            if not right_row:
+                x1 = right_Q_est[0][0]
+                y1 = height
+                x2 = 0
+                y2 = height+(right_Q_est[0][0]/np.tan(right_Q_est[1][0]) )
+                theta = right_Q_est[1][0]
+                intercept = right_Q_est[0][0]
+                right_row = [x1,y1,x2,y2,theta,intercept]
+        trial +=1
 
-# Jupyter Notebook
-.ipynb_checkpoints
+        pass
+        # Draw sample row markers
+        (height, width) = img.shape[:2]
+    if len(left_row) == 0 :
+        left_x = 'None'
+    else:
+        left_x = left_row[-1]
+    if len(right_row)== 0:
+        right_x = 'None'
+    else:
+        right_x = right_row[-1]
 
-# IPython
-profile_default/
-ipython_config.py
+    if save_flag == 0:
+        cv2.line(img, (int(left_row[0]),int(left_row[1])), (int(left_row[2]), int(left_row[3])), color, 5)
+        cv2.line(img, (int(right_row[0]),int(right_row[1])), (int(right_row[2]), int(right_row[3])), color, 5)
+        save_image('row_detect', img)
+    #Save image
+    save_image('row_detect', img)
+    # Show image
+    cv2.imshow('row Markers', img)
+    key = cv2.waitKey(1)
 
-# pyenv
-.python-version
+def process_img(imge, side):
+    '''
+    process_img(imge) function is used to perform all the required image processing for row detection
+    '''
+    b, g, r = cv2.split(imge)
+    image_edit = 2*g - r - b
+    edg = skeletonize(image_edit)
+    # image_edit = cv2.fastNlMeansDenoising(image_edit,None,10,7,21)
+    # edg = cv2.Canny(image_edit,2,50)
+    # edg = cv2.fastNlMeansDenoising(edg,None,10,7,21)
+    if side is 'left_row' and save_flag == 1:
+        save_image('skeleton_left_img', edg)
+        save_image('grayscale_left_img', image_edit)
+    elif side is 'right_row' and save_flag == 1:
+        save_image('grayscale_right_img', image_edit)
+        save_image('skeleton_right_img', edg)
+    return edg
+def skeletonize(image_in):
+    '''Inputs and grayscale image and outputs a binary skeleton image'''
+    size = np.size(image_in)
+    skel = np.zeros(image_in.shape, np.uint8)
+    ret, image_edit = cv2.threshold(image_in, 80, 250, 1)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
+    done = False
+    while not done:
+        eroded = cv2.erode(image_edit, element)
+        temp = cv2.dilate(eroded, element)
+        temp = cv2.subtract(image_edit, temp)
+        skel = cv2.bitwise_or(skel, temp)
+        image_edit = eroded.copy()
+        zeros = size - cv2.countNonZero(image_edit)
+        if zeros == size:
+            done = True
+    return skel
+def elimnate_predicted_background(row, img, img_width,img_height,top_margin, left_margin,  height, Q_est, prediction_error_tolerance ):
+    '''
+    elimnate_predicted_background(row,img,img_width,img_height,top_margin,left_margin,height,Q_est,prediction_error_tolerance) function is used to eliminate background using state estimate to improve performance. only a thin strip around the estimate of width equal to error tolerance is left
+    '''
+    x1 = Q_est[0][0]
+    y1 = height
+    x2 = 0
+    y2 = height+(Q_est[0][0]/np.tan(Q_est[1][0]) )
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+    if (row in ["left", "Left","LEFT"]):
+        for x in range(0,img_width):
+            for y in range(0,img_height):
+                if y<(y1  -  top_margin - (((x+left_margin) - (x1 - prediction_error_tolerance))*(y1-y2) /(x2-x1)   )  ) or y>(y1  -  top_margin - (((x+left_margin) - (x1 + prediction_error_tolerance))*(y1-y2) /(x2-x1)   )  )   :
+                    img[y][x] = 0
+    if (row in ["right", "Right","RIGHT"]):
+        for x in range(0,img_width):
+            for y in range(0,img_height):
+                if y>(y1  -  top_margin - (((x+left_margin) - (x1 - prediction_error_tolerance))*(y1-y2) /(x2-x1)   )  ) or y<(y1  -  top_margin - (((x+left_margin) - (x1 + prediction_error_tolerance))*(y1-y2) /(x2-x1)   )  )   :
+                    img[y][x] = 0
+    return img
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
+#function which detects all the lines
+def line_detect(imge, threshold,lower_angle_lim, upper_angle_lim ):
+    '''
+    line_detect(imge, threshold,lower_angle_lim, upper_angle_lim ) function is used to detect lines from the processed image which have a houghscore greater than the threshold and whose angles does not lie between the lower and upper angle limit.(this is to ensure that the lines are almost vertical)
+    '''
+    all_lines = cv2.HoughLines(imge,1,np.pi/180,threshold)
+    req_lines = []
+    if isinstance(all_lines,np.ndarray):
+        #ensuring that all the detected lines are nearly vertical. i.e. not lying between the two angle limits
+        for each_line in all_lines:
+            for rho,theta in each_line:
+                if theta < np.pi*lower_angle_lim/180 or theta> np.pi*upper_angle_lim/180:
+                    a = np.cos(theta)
+                    b = np.sin(theta)
+                    x0 = a*rho
+                    y0 = b*rho
+                    x1 = int(x0 + 1000*(-b))
+                    y1 = int(y0 + 1000*(a))
+                    x2 = int(x0 - 1000*(-b))
+                    y2 = int(y0 - 1000*(a))
+                    req_lines.append([x1,y1,x2,y2,rho,theta])
+    return req_lines
+#function to determine intercept of a line with the bottom edge of the image
+def find_intercept(height,top_margin,left_margin,x1,y1,x2,y2):
+    '''
+    find_intercept(height,top_margin,left_margin,x1,y1,x2,y2) function is used to determine intercepts of a given line with the bottom of the image
+    '''
+    Y1 = -(y1 + top_margin)
+    X1 = x1 + left_margin
+    Y2 = -(y2 + top_margin)
+    X2 = x2+ left_margin
+    Y = - height
+    intercept = 0
+    if Y2 != Y1:
+        intercept = float(Y-Y1) * float(X2-X1) / float(Y2-Y1) + float(X1)
+    return intercept
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+#function to determine the left and right rows from a set of lines
+def decide_rows(left_or_right,lines,height,top_margin,left_margin,right_margin):
+    '''
+    decide_rows(left_or_right,lines,height,top_margin,left_margin,right_margin) function is used to detect the left and right rows out of all the lines detected. it uses a weighted score of distance between y intercept and mid point along with the steepness of the line to determine the rows.
+    '''
+    dist_weight = 2
+    angle_weight = 10
+    row_score = -100000000
+    row =[]
 
-# SageMath parsed files
-*.sage.py
+    if left_or_right in ['left','Left','LEFT']:
+        for x1,y1,x2,y2,rho,theta in lines:
+            intercept = find_intercept(height,top_margin,left_margin,x1,y1,x2,y2)
+            if theta>0 and theta<np.pi/2: #the angle of left row is assumed to be between 0and 90 degrees
+                score = (-1*angle_weight*theta)+ (-1*dist_weight * (right_margin - intercept)) #lower the distance from center of the two rows, higher the score, steeper the line higher the score
+                if score > row_score: #the line with highest score is the left row
+                    row_score = score
+                    row = [x1+left_margin,y1+top_margin,x2+left_margin,y2+top_margin,theta,intercept]
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+    if left_or_right in ['right','Right','RIGHT']:
+        for x1,y1,x2,y2,rho,theta in lines:
+            intercept = find_intercept(height,top_margin,left_margin,x1,y1,x2,y2)
+            if theta < np.pi and theta > np.pi/2 : #the angle of right row is assumed to be between 180 and 90 degrees
+                score = (angle_weight*theta)+ (-1*dist_weight * (intercept - left_margin)) #lower the distance from center of two rows, higher the score, steeper the line higher the score
+                if score > row_score: #the line with highest score is the right row
+                    row_score = score
+                    row = [x1+left_margin,y1+top_margin,x2+left_margin,y2+top_margin,theta,intercept]
+    return row
 
-# Spyder project settings
-.spyderproject
-.spyproject
+#user defined function to calculate the dot product of two matrices
+def dot_prod(a, b):#had to use a user defined function as numpy.dot was unreliable!
+    '''
+    dot_prod(a, b) function is used to determint the dot product between the matrices a and b. However the number of columns in a has to be equal to the number of rows in b, else an exception would be raised
+    '''
+    if(a.shape[1]!=b.shape[0]):
+        raise Exception("incompatible shapes",a.shape," ",b.shape)
+        return 0
+    else:
+        dot= np.ones((a.shape[0],b.shape[1]))
+        for i in range(0,a.shape[0]):
+            for k in range(0,b.shape[1]):
+                temp=0
+                for j in range(0,a.shape[1]):
+                    temp += a[i][j]*b[j][k]
+                dot[i][k] = temp
+        return dot
 
-# Rope project settings
-.ropeproject
+#function to determine the state and covariance estimate of the system using Kalman's algorithm
+def Kalman_filter_estimate(A,B,u,Ex,Q,P):
+    '''
+    Kalman_filter_estimate(A,B,u,Ex,Q,P) function is used to determint the state and the state covariance matrix of the described system using Kalman's algorithm
 
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
+    input:  A - numpy.ndarray, State transition matrix of the system
+      B - numpy.ndarray, Control correction matrix of the system
+      u - numpy.ndarray, Control input to the system
+      Ex - numpy.ndarray, State prediction error
+      Q - numpy.ndarray, state of the system at the preceding time sample
+      P - numpy.ndarray, state covariance matrix at the preceding time sample
+    '''
+    #Prediction part of Kalman Filter
+    #Step 1: Est_of_x_at_t = (A * x_at_t-1) + (B * u_at_t-1)
+    Q_est = dot_prod(A,Q) +  dot_prod(B,u) #prediction of state
+    #Step 2: Est_of_state_cov_at_t = (A * state_cov_at_t-1 * A_transpose) + Ex
+    P_est = dot_prod(dot_prod(A,P),A.transpose())+Ex #prediction of state covariance
+    return (Q_est,P_est)
+#function to determine the updated state and state covariance matrices of the system using Kalman's algorithm
+def Kalman_Filter_Update(C,Ex,Ez,Q_est, P_est, z ):
+    '''
+    Kalman_Filter_Update(C,Ex,Ez,Q_est, P_est, z ) function is used to calculate the updated state and state covariance matix through feedback z using Kalman's algorithm
+    input:  C - numpy.ndarray, Measurement conversion matrix of the system
+      Ex - numpy.ndarray, State prediction error
+      Ez - numpy.ndarray, Measurement error
+      Q_est - numpy.ndarray, Estimated state for the current time sample
+      P_est - numpy.ndarray, Estimated state covariance matrix for the current time sample
+      z - numpy.ndarray, Measurement matrix
+    output: Q - numpy.ndarray, Updated state of the system for the current time sample
+      P - numpy.ndarray, Updated state covariance matrix for the crrent time step
+    '''
+    if Q_est.size:
+        #Update part of Kalman filter
+        #Step 3: Kalman_gain_at_t = Est_of_state_cov_at_t * C_transpose ( C * Est_of_state_cov_at_t * C_transpose   +  Ez  )
+        K = dot_prod( dot_prod(P_est,C.transpose()), np.linalg.inv(dot_prod(C,dot_prod(P_est,C.transpose()))+Ez)  )# Kalman gain (The weightage that needs to be given for the discrepency in measurement and the prediction to update the state and its covariance )
+        #Step 4: State_at_t = Est_of_state_at_t + Kalman_gain_at_t (measured_variable_at_t - (C * Est_of_state_at_t) )
+        Q = Q_est + dot_prod(K , (z - dot_prod(C,Q_est)  )  ) # correcting state estimate using measured variables to obtain actual state
+        #Step 5: State_cov_at_t = (I - Kalman_gain_at_t * C) Est_of_state_cov_at_t
+        P = dot_prod( (np.identity(4) - dot_prod(K,C)  ), P_est)# correcting state covariance estimate using measured variables to obtain actual state covariance
+    else:
+        Q = np.array([[z[0][0]],[z[1][0]],[0],[0]])#state variable [[c],[theta],[c'],[theta']]
+        P = Ex #Estimate of initial state covriance matrix
+    return (Q,P)
+#function to detect lines by iteratively decreasing Hough threshold untill atleast one line is detected
+def detect_best_lines(img,Hough_threshold_upper_limit,Hough_threshold_lower_limit,lower_angle_lim, upper_angle_lim):
+    '''
+    detect_best_lines(img,Hough_threshold_upper_limit,Hough_threshold_lower_limit,lower_angle_lim, upper_angle_lim) function is used to detect lines by iteratively decreasing Hough threshold untill atleast one line is detected
+    '''
+    Hough_threshold = Hough_threshold_upper_limit
+    lines = line_detect(img, Hough_threshold,lower_angle_lim, upper_angle_lim )
+    while (isinstance(lines,list) and Hough_threshold>Hough_threshold_lower_limit):
+        lines = line_detect(img, Hough_threshold,lower_angle_lim, upper_angle_lim )
+        Hough_threshold -= 5
+        pass
+    return lines
+def save_image(image_name, image_data):
+    '''Saves image if user requests before runtime'''
+    # if  curr_image in images_to_save:
+    image_name_new = os.path.join(image_out_path, "{0}_{1}.jpg".format(image_name, str(curr_image) ))
+    cv2.imwrite(image_name_new, image_data)
+def draw_lines(imge, draw_line, color):
+    for line in draw_line:
+        cv2.line(imge, (int(line[0]), int(line[1])), (int(line[2]),int(line[3])), color, 5)
+    #function which drawsthe detected lines on to an image
+def draw_line(imge,drw_lines,colour):
+    '''
+    draw_line(imge,drw_lines) function is used to draw lines in an image
+    '''
+    for x1,y1,x2,y2,rho,theta in drw_lines:
+        cv2.line(imge,(x1,y1),(x2,y2),colour,2)
+    return imge
+main()
